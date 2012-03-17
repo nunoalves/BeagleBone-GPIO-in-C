@@ -4,10 +4,11 @@
 * @brief Addressing multiple BeagleBone GPIO pins in C
 * @details Self-contined program that will turn ON/OFF a specified group of
 * of GPIO pins in the beaglebone board. This code was possible due to prior 
-* efforts by Christian Mitchell, Markus Klink and Matt Richardson.
+* efforts by Christian Mitchell, Markus Klink and Matt Richardson. To compile
+* and run this code, type something like "gcc main.c ; ./a.out ;  rm -f a.out"
 *
 * @author Nuno Alves
-* @date 16/March/2012 
+* @date 17/March/2012 
 **/
 
 #include <stdio.h> 
@@ -15,17 +16,11 @@
 #include <unistd.h> 
 #include <string.h> 
 #include <assert.h>
+#include <time.h>
 
 //If DEBUG is defined to TRUE (1), intermediate debug messages will be displayed 
 //when code is executing. You may set it to FALSE (0) for no debug information.
-#define DEBUG 1 
-
-#define UNEXPORT                fopen( "/sys/class/gpio/unexport", "w" ) 
-#define EXPORT                  fopen( "/sys/class/gpio/export", "w" ) 
-#define GSTRING( s, i, g )      sprintf( s, "/sys/class/gpio/gpio%d %s", i, g ); 
-#define GDIRECTION              "/direction" 
-#define GVALUE                  "/value" 
-#define GOPEN( s )              fopen( (s), "w" ) 
+#define DEBUG 1
 
 //The following #defines make it easier for the user to add differnt pins
 #define P8_3  0
@@ -44,59 +39,45 @@ struct gpioID
 	char *GPIOMUX;  //e.g: gpmc_ad6; 
 };
 
-
-int gpio_init ( int pin ) 
-{ 
-        FILE *p = NULL; 
-        char gpio[50]; 
-
-        if( ( p = EXPORT ) == NULL ) 
-        { 
-                printf( "Problem opening gpio%d\n", pin ); 
-                return -1; 
-        } 
-        fprintf( p, "%d", pin ); 
-        fclose( p ); 
-
-        GSTRING( gpio, pin, GDIRECTION ); 
-        if( ( p = GOPEN( gpio ) ) == NULL ) 
-        { 
-                printf( "Problem opening gpio%d\n %s\n", pin, gpio ); 
-                return -1; 
-        } 
-        fprintf( p, "out"); 
-        fclose( p ); 
-
-        return 0; 
-} 
-int gpio_clean ( int pin ) 
-{ 
-        FILE *p = NULL; 
-        if( ( p = UNEXPORT) == NULL ) 
-        { 
-                printf( "Problem closing gpio%d\n", pin ); 
-                return -1; 
-        } 
-        fprintf( p, "%d", pin ); 
-        fclose( p ); 
-        return 0; 
-} 
-
-int gpio_control ( int pin, int value ) 
-{ 
-        FILE *p = NULL; 
-        char gpio[50]; 
-
-        GSTRING( gpio, pin, GVALUE ); 
-        if( ( p = GOPEN( gpio ) ) == NULL ) 
-        { 
-                printf( "Problem controlling gpio%d\n", pin ); 
-                return -1; 
-        } 
-        fprintf( p , "%d", value ); 
-        pclose( p ); 
+/** 
+* @brief Writes a value to a particular GPIO, logic-HIGH or logic-LOW.
+* @param GPIONUMBER The GPIO number (e.g. 38 for gpio1[6])
+* @param value The logic value we want to write to the GPIO (0 or 1)
+**/ 
+        void write_GPIO_value(int GPIONUMBER, int value)
+{
+	char export_filename[50]; 
+	FILE *f = NULL; 
+	 	 
+	sprintf(export_filename, "/sys/class/gpio/gpio%d/value",GPIONUMBER); 
+	f = fopen(export_filename,"w");
+	assert(f!=NULL);    
+	fprintf(f , "%d",value); 
+	pclose(f); 
 }
 
+/** 
+* @brief Tells the OS that we are done with using GPIOs
+* @param selected_GPIOs[] initialized array of gpioID.
+* @param selectedPins[] Array with the user specified pins
+* @param sizeof_selectedPins Number of pins that were specified by the user
+**/ 
+void cleanup_GPIO(struct gpioID selected_GPIOs[],int selectedPins[], int nbr_selectedPins)
+{
+	char export_filename[50]; 
+	FILE *f = NULL; 
+	int i;
+	
+	for (i=0; i<nbr_selectedPins;i++)
+	{
+		//unexport the pin
+		f = fopen("/sys/class/gpio/unexport","w");
+		assert(f!=NULL);   
+        fprintf(f, "%d",selected_GPIOs[i].GPIONUMBER); 
+        pclose(f); 
+        
+    }
+}
 
 /** 
 * @brief Initializes all the user specified pins  
@@ -108,7 +89,11 @@ int gpio_control ( int pin, int value )
 void initialize_each_enabled_gpio(struct gpioID selected_GPIOs[],int selectedPins[], int nbr_selectedPins)
 {
 	int i;
+	//this variable will contain the location of the file that we need to 
+	//set to mode 7
+	char export_filename[50]; 
 
+	 FILE *f = NULL; 
 	//You are not allowed to use more than 32 active pins. This is not a 
 	//beagleboard limitation, but a limitation of this code.
 	assert (nbr_selectedPins<=32);
@@ -162,8 +147,54 @@ void initialize_each_enabled_gpio(struct gpioID selected_GPIOs[],int selectedPin
 		}
 	}
     
-    printf("TODO in initialize_each_enabled_gpio() : initilize pins to OFF\n"); 
+    //set the each mux pin to mode 7
+    for (i=0; i<nbr_selectedPins;i++)
+	{
+		//set mux to mode 7 
+	 	sprintf(export_filename, "/sys/kernel/debug/omap_mux/%s", selected_GPIOs[i].GPIOMUX); 
+		f = fopen(export_filename,"w");
+		 
+		if (f == NULL)
+		{
+         	printf( "\nERROR: There was a problem opening /sys/kernel/debug/omap_mux/%s\n", selected_GPIOs[i].GPIOMUX); 
+			printf("\n%s\t%s\t%s\t%d\n\n", selected_GPIOs[i].PINNAME, selected_GPIOs[i].GPIOID, selected_GPIOs[i].GPIOMUX, selected_GPIOs[i].GPIONUMBER);
+
+			assert(f!=NULL);
+        } 
+        fprintf(f, "7"); 
+        pclose(f); 
+
+		//export the pin
+		f = fopen("/sys/class/gpio/export","w");
+		 
+		if (f == NULL)
+		{
+         	printf( "\nERROR: There was a problem opening /sys/kernel/debug/omap_mux/%s\n", selected_GPIOs[i].GPIOMUX); 
+			printf("\n%s\t%s\t%s\t%d\n\n", selected_GPIOs[i].PINNAME,selected_GPIOs[i].GPIOID,selected_GPIOs[i].GPIOMUX,selected_GPIOs[i].GPIONUMBER);
+
+			assert(f!=NULL);
+        } 
+        fprintf(f, "%d",selected_GPIOs[i].GPIONUMBER); 
+        pclose(f); 
+        
+        //set the appropriate io direction (out)
+	 	sprintf(export_filename, "/sys/class/gpio/gpio%d/direction", selected_GPIOs[i].GPIONUMBER); 
+		f = fopen(export_filename,"w");
+		 
+		if (f == NULL)
+		{
+         	printf( "\nERROR: There was a problem opening /sys/class/gpio/gpio%d/direction\n", selected_GPIOs[i].GPIONUMBER); 
+			printf("\n%s\t%s\t%s\t%d\n\n",selected_GPIOs[i].PINNAME,selected_GPIOs[i].GPIOID,selected_GPIOs[i].GPIOMUX,selected_GPIOs[i].GPIONUMBER);
+
+			assert(f!=NULL);
+        } 
+        fprintf(f , "out" ); 
+        pclose(f); 
+        
+        write_GPIO_value(selected_GPIOs[i].GPIONUMBER,0);
+	}
 }
+
 
 /** 
 * @brief Displays all information for each of the user specified pins. 
@@ -180,12 +211,7 @@ void display_each_enabled_gpio(struct gpioID selected_GPIOs[],int nbr_selectedPi
 
 	for (i=0; i< nbr_selectedPins; i++)
 	{
-		printf("%s\t%s\t%s\t%d\n",	
-								selected_GPIOs[i].PINNAME,
-								selected_GPIOs[i].GPIOID,
-								selected_GPIOs[i].GPIOMUX,
-								selected_GPIOs[i].GPIONUMBER
-								);
+		printf("%s\t%s\t%s\t%d\n",selected_GPIOs[i].PINNAME,selected_GPIOs[i].GPIOID,selected_GPIOs[i].GPIOMUX,selected_GPIOs[i].GPIONUMBER);
 	}
 	printf("\n");
 }
@@ -205,20 +231,14 @@ void turn_ON_OFF_pins(struct gpioID selected_GPIOs[],unsigned int data_to_write,
 	for (i=0;i<nbr_selectedPins;i++)
 	{
 		//code that turns ON/OFF a pin
-		//printf("TODO in turn_ON_OFF_pins() : actually  turn ON/OFF pins\n"); 
-		//(some function call goes here)
+		write_GPIO_value(selected_GPIOs[i].GPIONUMBER,bitRead(data_to_write,i));
 
 		//this is just for debugging purposes
 		if (DEBUG)
 		{ 
 			if (bitRead(data_to_write,i) == 1) printf("turning ON");	
 			else printf("turning OFF");	
-			printf(	"\t%s (%s %d %s)\n",
-						selected_GPIOs[i].PINNAME,
-						selected_GPIOs[i].GPIOID,
-						selected_GPIOs[i].GPIONUMBER,
-						selected_GPIOs[i].GPIOMUX);
-				
+			printf(	"\t%s (%s %d %s)\n",selected_GPIOs[i].PINNAME,selected_GPIOs[i].GPIOID,selected_GPIOs[i].GPIONUMBER,selected_GPIOs[i].GPIOMUX);				
 		}
 	}
 	if (DEBUG) printf("\n");
@@ -289,25 +309,28 @@ int main()
     data_to_write=10; 
 	turn_ON_OFF_pins(enabled_gpio,data_to_write,nbr_selectedPins);
 
-	//printf("TODO in main() : put a small delay here\n"); 
-
+	 sleep(1); //sleep for 1 second
+	 
 	//In addition to the pins that are already ON (P8_4, P8_11), I now
 	//also want to turn ON pin P8_12. Since P8_12 is on position 4, I 
 	//need to write a 1 to position 4.
     data_to_write=bitWrite(data_to_write,1,4);
 	turn_ON_OFF_pins(enabled_gpio,data_to_write,nbr_selectedPins);
- 
+
     //Of course, I could have done something like
-    /*
-      data_to_write=26; 
-      turn_ON_OFF_pins(enabled_gpio,data_to_write,nbr_selectedPins);
-	*/
+    //data_to_write=26; 
+    //turn_ON_OFF_pins(enabled_gpio,data_to_write,nbr_selectedPins);
 	//Which would have yielded the exact same outcome.
  
-    //printf("TODO in main() : put a small delay here\n"); 
+	 sleep(1); //sleep for 1 second
 
     //Now I would like to turn OFF pin P8_11, while leaving pins P8_4 & P8_12 ON
 	//Since pin P8_11 is on position 3
   	 data_to_write=bitWrite(data_to_write,0,3);
 	turn_ON_OFF_pins(enabled_gpio,data_to_write,nbr_selectedPins);
+	
+	 sleep(1); //sleep for 1 second
+
+	//we should now tell the OS that we are done with the GPIOs
+	cleanup_GPIO(enabled_gpio,selectedPins,nbr_selectedPins);
 }
